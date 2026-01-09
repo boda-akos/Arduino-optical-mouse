@@ -1,5 +1,5 @@
 // CH32V00x ST7789 76x284 Display PAW3205 optical mouse chip
-
+//default SCL PC5, SDA PC6
 #define TFT_RST  PD4
 #define TFT_DC   PD3
 #define TFT_CS   PD2
