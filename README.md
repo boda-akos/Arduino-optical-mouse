@@ -1,4 +1,4 @@
-# Arduino-optical-mouse
+# Arduino-optical-mouse https://www.thingiverse.com/thing:7266629
 Arduino optical mouse learning project, CH32V00x MCU, 284x76 pixel 1.9" TFT. Optical Arduino Mouse Project
 
 This project repurposes the sensor from a (wireless) mouse inside a custom 3D-printed enclosure. While the demonstration uses a CH32V003 Arduino-compatible microcontroller, the code can be adapted with minimal effort to run on most other MCU platforms.
@@ -23,3 +23,4 @@ Connect these wires to the corresponding pins on your Arduino board.
 Software Demo:
 
 The provided demonstration code displays a moving cursor on a TFT screen. By moving the physical mouse, you control the cursor position. A pushbutton (integrated or added) allows you to select on-screen functions, creating a simple graphical interface for your projects.
+https://www.thingiverse.com/thing:7266629
