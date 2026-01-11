@@ -23,4 +23,7 @@ Connect these wires to the corresponding pins on your Arduino board.
 Software Demo:
 
 The provided demonstration code displays a moving cursor on a TFT screen. By moving the physical mouse, you control the cursor position. A pushbutton (integrated or added) allows you to select on-screen functions, creating a simple graphical interface for your projects.
+
 https://www.thingiverse.com/thing:7266629
+
+https://github.com/boda-akos/CH32V003-ST7789-Virtual-Keyboard-with-PAW3205-Optical-Mouse
