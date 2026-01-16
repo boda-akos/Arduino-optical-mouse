@@ -27,3 +27,5 @@ The provided demonstration code displays a moving cursor on a TFT screen. By mov
 https://www.thingiverse.com/thing:7266629
 
 https://github.com/boda-akos/CH32V003-ST7789-Virtual-Keyboard-with-PAW3205-Optical-Mouse
+
+Update : D429BDA sensor works the same  
