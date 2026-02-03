@@ -1,0 +1,678 @@
+// CH32V00x ST7789 76x284 Display PAW3205 optical mouse chip
+// Combined display driver and mouse sensor interface
+
+// ========== PIN DEFINITIONS ==========
+// Display control pins
+#define TFT_CS   PD2    // Chip Select
+#define TFT_DC   PD3    // Data/Command
+#define TFT_RST  PD4    // Reset
+
+// Display SPI pins (hardware SPI1)
+#define TFT_SCK  PC5    // SPI Clock
+#define TFT_MOSI PC6    // SPI Data Out
+
+// Mouse sensor pins (bit-banged SPI)
+#define MOUSE_SCLK  PC0    // Serial Clock
+#define MOUSE_SDIO  PD0    // Serial Data I/O
+#define MOUSE_SW    PC1    // Mouse button switch
+
+// ========== COLOR DEFINITIONS (RGB565) ==========
+// Note: Color names corrected for actual RGB565 values
+#define BL 0x001F  // Blue
+#define GN 0x07E0  // Green  
+#define RD 0xF800  // Red
+#define WH 0xFFFF  // White
+#define BK 0x0000  // Black
+#define CY 0xFFE0  // Cyan
+#define YL 0xFE20  // Yellow
+#define MG 0xF81F  // Magenta
+#define SL 0x7BEF  // Gray
+
+/* Basic Colors (BGR 5-6-5 format)
+RED: 0x001F GREEN: 0x07E0 BLUE: 0xF800 YELLOW: 0x07FF (RED + GREEN)
+MAGENTA: 0xF81F (RED + BLUE) CYAN: 0xFFE0 (GREEN + BLUE)
+WHITE: 0xFFFF (ALL ON) BLACK: 0x0000 (ALL OFF)
+ORANGE: 0x04FF PINK: 0xFC1F PURPLE: 0x8010 LIME: 0x05E0
+TEAL: 0x87E0 NAVY: 0x8000 MAROON: 0x0010 DARK GRAY: 0x4208
+GRAY: 0x8410 LIGHT GRAY: 0xC618 SILVER: 0xA514 BROWN: 0x0210
+OLIVE: 0x0410 FOREST GREEN: 0x0280 GOLD: 0x051F
+Lighter: 0x063F Darker: 0x0410 */
+
+// ========== DISPLAY CONFIGURATION ==========
+#define DISPLAY_WIDTH  76
+#define DISPLAY_HEIGHT 284
+#define TFT_X_OFFSET   82    // Display X offset for ST7789
+#define TFT_Y_OFFSET   18    // Display Y offset for ST7789
+
+// MADCTL register bits for rotation
+#define ST77XX_MADCTL_MY  0x80   // Row address order
+#define ST77XX_MADCTL_MX  0x40   // Column address order
+#define ST77XX_MADCTL_MV  0x20   // Row/column exchange
+#define ST77XX_MADCTL_ML  0x10   // Vertical refresh order
+#define ST77XX_MADCTL_RGB 0x08   // RGB-BGR order
+
+// ========== GLOBAL VARIABLES ==========
+// Display state variables
+int textCol = WH, textBgr = BK;    // Text colors
+int tftIdx = 0, tftIdy = 0;        // Text cursor position
+int xStart, yStart;                // Display offsets
+byte textSize = 1, rotate = 0;     // Text size and rotation
+
+// Mouse cursor position
+int msx = 8, msy = 8;              // Mouse cursor coordinates
+
+// ========== FONT TABLE (5x7 characters) ==========
+const uint8_t Chartable[] = 
+{ 0x00,0x00,0x00,0x00,0x00, 0x00,0x00,0x2F,0x00,0x00, 0x00,0x07,0x00,0x07,0x00, 0x14,0x7F,0x14,0x7F,0x14,
+  0x24,0x2A,0x7F,0x2A,0x12, 0x23,0x13,0x08,0x64,0x62, 0x36,0x49,0x55,0x22,0x50, 0x00,0x05,0x03,0x00,0x00,
+  0x00,0x1C,0x22,0x41,0x00, 0x00,0x41,0x22,0x1C,0x00, 0x14,0x08,0x3E,0x08,0x14, 0x08,0x08,0x3E,0x08,0x08,
+  0x00,0x00,0x50,0x30,0x00, 0x10,0x10,0x10,0x10,0x10, 0x00,0x60,0x60,0x00,0x00, 0x20,0x10,0x08,0x04,0x02,
+  0x3E,0x51,0x49,0x45,0x3E, 0x00,0x42,0x7F,0x40,0x00, 0x42,0x61,0x51,0x49,0x46, 0x21,0x41,0x45,0x4B,0x31,
+  0x18,0x14,0x12,0x7F,0x10, 0x27,0x45,0x45,0x45,0x39, 0x3C,0x4A,0x49,0x49,0x30, 0x01,0x71,0x09,0x05,0x03,
+  0x36,0x49,0x49,0x49,0x36, 0x06,0x49,0x49,0x29,0x1E, 0x00,0x36,0x36,0x00,0x00, 0x00,0x56,0x36,0x00,0x00,
+  0x08,0x14,0x22,0x41,0x00, 0x14,0x14,0x14,0x14,0x14, 0x00,0x41,0x22,0x14,0x08, 0x02,0x01,0x51,0x09,0x06,
+  0x32,0x49,0x59,0x51,0x3E, 0x7E,0x11,0x11,0x11,0x7E, 0x7F,0x49,0x49,0x49,0x36, 0x3E,0x41,0x41,0x41,0x22,
+  0x7F,0x41,0x41,0x22,0x1C, 0x7F,0x49,0x49,0x49,0x41, 0x7F,0x09,0x09,0x09,0x01, 0x3E,0x41,0x49,0x49,0x7A,
+  0x7F,0x08,0x08,0x08,0x7F, 0x00,0x41,0x7F,0x41,0x00, 0x20,0x40,0x41,0x3F,0x01, 0x7F,0x08,0x14,0x22,0x41,
+  0x7F,0x40,0x40,0x40,0x40, 0x7F,0x02,0x0C,0x02,0x7F, 0x7F,0x04,0x08,0x10,0x7F, 0x3E,0x41,0x41,0x41,0x3E,
+  0x7F,0x09,0x09,0x09,0x06, 0x3E,0x41,0x51,0x21,0x5E, 0x7F,0x09,0x19,0x29,0x46, 0x46,0x49,0x49,0x49,0x31,
+  0x01,0x01,0x7F,0x01,0x01, 0x3F,0x40,0x40,0x40,0x3F, 0x1F,0x20,0x40,0x20,0x1F, 0x3F,0x40,0x38,0x40,0x3F,
+  0x63,0x14,0x08,0x14,0x63, 0x07,0x08,0x70,0x08,0x07, 0x61,0x51,0x49,0x45,0x43, 0x00,0x7F,0x41,0x41,0x00,
+  0x02,0x04,0x08,0x10,0x20, 0x00,0x41,0x41,0x7F,0x00, 0x11,0x39,0x55,0x11,0x1F, 0x40,0x40,0x40,0x40,0x40,
+  0x10,0x38,0x54,0x10,0x1F, 0x20,0x54,0x54,0x54,0x78, 0x7F,0x48,0x44,0x44,0x38, 0x38,0x44,0x44,0x44,0x20,
+  0x38,0x44,0x44,0x48,0x7F, 0x38,0x54,0x54,0x54,0x18, 0x08,0x7E,0x09,0x01,0x02, 0x0C,0x52,0x52,0x52,0x3E,
+  0x7F,0x08,0x04,0x04,0x78, 0x00,0x44,0x7D,0x40,0x00, 0x20,0x40,0x44,0x3D,0x00, 0x7F,0x10,0x28,0x44,0x00,
+  0x00,0x41,0x7F,0x40,0x00, 0x7C,0x04,0x18,0x04,0x78, 0x7C,0x08,0x04,0x04,0x78, 0x38,0x44,0x44,0x44,0x38,
+  0x7C,0x14,0x14,0x14,0x08, 0x08,0x14,0x14,0x18,0x7C, 0x7C,0x08,0x04,0x04,0x08, 0x48,0x54,0x54,0x54,0x20,
+  0x04,0x3F,0x44,0x40,0x20, 0x3C,0x40,0x40,0x20,0x7C, 0x1C,0x20,0x40,0x20,0x1C, 0x3C,0x40,0x30,0x40,0x3C,
+  0x44,0x28,0x10,0x28,0x44, 0x0C,0x50,0x50,0x50,0x3C, 0x44,0x64,0x54,0x4C,0x44, 0x11,0x39,0x55,0x11,0x1F,
+  0x10,0x38,0x54,0x10,0x1F, 0x20,0x54,0x57,0x54,0x78, 0x38,0x54,0x57,0x54,0x18, 0x00,0x48,0x7B,0x40,0x00,
+  0x38,0x44,0x47,0x44,0x38, 0x38,0x47,0x44,0x47,0x38, 0x38,0x45,0x44,0x45,0x38, 0x3C,0x40,0x47,0x20,0x7C,
+  0x3C,0x47,0x40,0x27,0x7C, 0x3C,0x41,0x40,0x21,0x7C };
+
+// ========== SETUP FUNCTION ==========
+void setup() {
+    // Initialize mouse sensor pins
+    pinMode(MOUSE_SW, INPUT_PULLUP);   // Mouse switch (active low)
+    pinMode(MOUSE_SCLK, OUTPUT);       // Mouse serial clock
+    pinMode(MOUSE_SDIO, OUTPUT);       // Mouse serial data
+    
+    // Set initial mouse SPI pin states
+    digitalWrite(MOUSE_SCLK, HIGH);    // Clock idle state HIGH
+    digitalWrite(MOUSE_SDIO, HIGH);    // Data idle state HIGH
+    
+    // Initialize mouse sensor
+    resync();                          // Synchronize serial interface
+    writePAW(0x06, 0x80);              // Reset command
+    delay(100); 
+    writePAW(0x06, 0x04);              // Set Motswk bit (level detection)
+    // writePAW(0x06, 0x44);           // Alternative: pulse detection mode
+    
+    /* Uncomment for 48MHz clock setup without external crystal:
+    RCC->CTLR |= RCC_PLLON;
+    while(!(RCC->CTLR & RCC_PLLRDY));
+    RCC->CFGR0 |= 0;
+    RCC->CFGR0 &= ~RCC_SW;
+    RCC->CFGR0 |= RCC_SW_PLL;
+    while((RCC->CFGR0 & RCC_SWS) != RCC_SWS_PLL);
+    */
+    
+    // Initialize display control pins
+    pinMode(TFT_CS, OUTPUT);           // Display chip select
+    pinMode(TFT_DC, OUTPUT);           // Display data/command
+    pinMode(TFT_RST, OUTPUT);          // Display reset
+    
+    // Initialize hardware SPI for display
+    RCC->APB2PCENR |= RCC_APB2Periph_SPI1;    // Enable SPI1 clock
+    
+    // Configure SPI pins for alternate function
+    GPIOC->CFGLR &= ~(0xF << (5*4) | 0xF << (6*4));  // Clear PC5, PC6 config
+    GPIOC->CFGLR |= (0xB << (5*4)) | (0xB << (6*4)); // AF push-pull 50MHz
+    
+    // Configure SPI1 controller
+    SPI1->CTLR1 = SPI_CTLR1_MSTR |    // Master mode
+                  SPI_CTLR1_SSM |     // Software slave management
+                  SPI_CTLR1_SSI;      // Internal slave select
+    SPI1->CTLR1 |= SPI_CTLR1_SPE;     // Enable SPI
+    
+    // Initialize display
+    InitTFT();                        // Initialize ST7789 controller
+    setRotation(1);                   // Set landscape orientation
+    fillScreen(BK);                   // Clear screen to black
+    delay(100);
+    
+    // Draw initial graphics and cursor
+    graph();                          // Draw grid background
+    fillCircle(msx, msy, 2, YL);      // Draw initial mouse cursor
+}
+
+// ========== MAIN LOOP ==========
+void loop() {
+    // Check for mouse motion (bit 7 of motion status register)
+    if (readPAW(0x02) & 0x80) {
+        mousPos();                    // Update mouse cursor position
+        graph();                      // Redraw graphics (if needed)
+    }
+    
+    // Check mouse button state
+    if (!digitalRead(MOUSE_SW)) {
+        // Mouse button pressed - add functionality here
+        // Example: tftPrint("Click!");
+    }
+}
+
+// ========== MOUSE FUNCTIONS ==========
+// Update mouse cursor position based on sensor data
+void mousPos(void) {
+    static int prmsx, prmsy;          // Previous cursor position
+    
+    // Read signed delta values from sensor
+    int8_t deltaX = readPAW(0x03);    // X movement (-128 to 127)
+    int8_t deltaY = readPAW(0x04);    // Y movement (-128 to 127)
+    
+    // Erase previous cursor
+    fillCircle(prmsx, prmsy, 2, BK);
+    
+    // Update cursor position with scaling and Y inversion
+    msx = msx + deltaX / 5;           // Scale down X movement
+    msy = msy - deltaY / 5;           // Scale down and invert Y movement
+    
+    // Constrain cursor to screen boundaries
+    if (msx < 2) msx = 2;
+    if (msx > 280) msx = 280;
+    if (msy < 2) msy = 2;
+    if (msy > 72) msy = 72;
+    
+    // Draw new cursor
+    fillCircle(msx, msy, 2, YL);
+    
+    // Store current position for next update
+    prmsx = msx;
+    prmsy = msy;
+}
+
+// Draw background grid pattern
+void graph(void) {
+    drawRect(0, 0, 284, 76, GN);      // Outer border
+    
+    // Draw vertical grid lines (every 15 pixels)
+    for (int i = 14; i < 284; i += 15) {
+        drawLine(i, 0, i, 75, YL);
+    }
+    
+    // Draw horizontal grid lines (every 19 pixels)
+    for (int i = 19; i < 60; i += 19) {
+        drawLine(0, i, 283, i, YL);
+    }
+}
+
+// Re-synchronize mouse sensor serial interface
+void resync(void) {
+    digitalWrite(MOUSE_SCLK, 1);
+    digitalWrite(MOUSE_SCLK, 0);
+    delayMicroseconds(2);             // t_RESYNC minimum = 1us
+    digitalWrite(MOUSE_SCLK, HIGH);
+    delay(20);                        // Wait for watchdog timer timeout
+}
+
+// Send one byte to PAW3204 sensor (MSB first)
+void sendByte(byte data) {
+    pinMode(MOUSE_SDIO, OUTPUT);
+    byte msk = 0x80;
+    
+    for(int i = 0; i < 8; i++) {      // MSB first
+        digitalWrite(MOUSE_SCLK, LOW);
+        if (data & msk) 
+            digitalWrite(MOUSE_SDIO, 1);
+        else  
+            digitalWrite(MOUSE_SDIO, 0);
+        digitalWrite(MOUSE_SCLK, HIGH);
+        msk = msk / 2;
+    }
+}
+
+// Receive one byte from PAW3204 sensor (MSB first)
+byte receiveByte() {
+    pinMode(MOUSE_SDIO, INPUT_PULLUP);    // Set as input with pull-up
+    byte data = 0, msk = 0x80;
+    
+    for(int i = 0; i < 8; i++) {          // MSB first
+        digitalWrite(MOUSE_SCLK, LOW);
+        digitalWrite(MOUSE_SCLK, HIGH);
+        if (digitalRead(MOUSE_SDIO)) 
+            data |= msk;
+        msk = msk / 2;
+    }
+    
+    return data;
+}
+
+// Write to PAW3204 register
+void writePAW(byte reg, byte data) {
+    sendByte(reg | 0x80);    // MSB=1 for write + 7-bit address
+    sendByte(data);          // Data byte
+}
+
+// Read from PAW3204 register
+byte readPAW(byte reg) {
+    sendByte(reg & 0x7F);    // MSB=0 for read + 7-bit address
+    pinMode(MOUSE_SDIO, INPUT_PULLUP);  // Release line for sensor to drive
+    return receiveByte();               // Read data byte
+}
+
+// ========== DISPLAY CONTROL FUNCTIONS ==========
+// Send command to display
+void writeCommand(uint8_t cmd) {
+    GPIOD->OUTDR &= ~(1<<3);           // DC LOW (command mode)
+    GPIOD->OUTDR &= ~(1<<2);           // CS LOW (select display)
+    SPI1_Transfer(cmd);                // Send command byte
+    GPIOD->OUTDR |= (1<<2);            // CS HIGH (deselect display)
+}
+
+// Send data to display
+void writeData(uint8_t data) {
+    GPIOD->OUTDR |= (1<<3);            // DC HIGH (data mode)
+    GPIOD->OUTDR &= ~(1<<2);           // CS LOW (select display)
+    SPI1_Transfer(data);               // Send data byte
+    GPIOD->OUTDR |= (1<<2);            // CS HIGH (deselect display)
+}
+
+// SPI data transfer function
+void SPI1_Transfer(uint8_t data) {
+    while (!(SPI1->STATR & (1 << 1)));  // Wait for TX buffer empty
+    SPI1->DATAR = data;                  // Write data to SPI
+    
+    while (!(SPI1->STATR & (1 << 0)));  // Wait for RX not empty
+    volatile uint8_t dummy __attribute__((unused)) = SPI1->DATAR;  // Clear RX buffer
+}
+
+// Set display address window with offsets
+void setAddrWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+    // Add display offsets
+    x += xStart;  
+    y += yStart;
+    uint32_t x1 = ((uint32_t)x << 16) | (x + w);
+    uint32_t y1 = ((uint32_t)y << 16) | (y + h);
+
+    writeCommand(0x2A);                // Column address set command
+    writeData(x1 >> 24);
+    writeData(x1 >> 16);
+    writeData(x1 >> 8);
+    writeData(x1 & 0xFF);
+    
+    writeCommand(0x2B);                // Row address set command
+    writeData(y1 >> 24);
+    writeData(y1 >> 16);
+    writeData(y1 >> 8);
+    writeData(y1 & 0xFF);
+    
+    writeCommand(0x2C);                // Memory write command
+}
+
+// Set display rotation
+void setRotation(uint8_t rotation) {
+    rotate = rotation % 4;
+    uint8_t madctl;
+    
+    switch (rotate) {
+        case 0:                        // Portrait orientation
+            madctl = 0xC0;             // MY=1, MX=1, MV=0
+            xStart = TFT_X_OFFSET;
+            yStart = TFT_Y_OFFSET;
+            break;
+        case 1:                        // Landscape (90° clockwise)
+            madctl = 0xB0;             // MY=1, MX=0, MV=1
+            xStart = TFT_Y_OFFSET;
+            yStart = TFT_X_OFFSET;
+            break;
+        case 2:                        // Portrait (180°)
+            madctl = 0x00;             // MY=0, MX=0, MV=0
+            xStart = TFT_X_OFFSET;
+            yStart = TFT_Y_OFFSET;
+            break;
+        case 3:                        // Landscape (270° clockwise)
+            madctl = 0x60;             // MY=0, MX=1, MV=1
+            xStart = TFT_Y_OFFSET;
+            yStart = TFT_X_OFFSET;
+            break;
+    }
+    
+    writeCommand(0x36);                // MADCTL command
+    writeData(madctl);
+    delay(10);
+}
+
+// ========== BASIC DRAWING FUNCTIONS ==========
+// Draw single pixel
+void tftPixel(uint16_t x, uint16_t y, uint16_t color) {
+    setAddrWindow(x, y, 1, 1);         // Set single pixel window
+    GPIOD->OUTDR |= (1<<3);            // DC HIGH (data mode)
+    GPIOD->OUTDR &= ~(1<<2);           // CS LOW (select display)
+    SPI1_Transfer(color >> 8);         // Send color high byte
+    SPI1_Transfer(color & 0xFF);       // Send color low byte
+    GPIOD->OUTDR |= (1<<2);            // CS HIGH (deselect display)
+}
+
+// Fill entire screen with color
+void fillScreen(uint16_t color) {
+    uint8_t hi = color >> 8, lo = color & 0xFF;
+    
+    // Set address window for entire display based on rotation
+    if (rotate == 0 || rotate == 2) {
+        setAddrWindow(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);  // Portrait
+    } else {
+        setAddrWindow(0, 0, DISPLAY_HEIGHT, DISPLAY_WIDTH);  // Landscape
+    }
+    
+    GPIOD->OUTDR |= (1<<3);            // DC HIGH (data mode)
+    GPIOD->OUTDR &= ~(1<<2);           // CS LOW (select display)
+    
+    // Fill all pixels with specified color
+    for(uint32_t i = 0; i < DISPLAY_WIDTH * DISPLAY_HEIGHT; i++) {
+        SPI1_Transfer(hi);
+        SPI1_Transfer(lo);  
+    }
+    
+    GPIOD->OUTDR |= (1<<2);            // CS HIGH (deselect display)
+}
+
+// ========== TEXT FUNCTIONS ==========
+// Set text size (1-4)
+void setTextSize(byte x) {
+    if (x < 1) x = 1;
+    if (x > 4) x = 4;
+    textSize = x;
+}
+
+// Set text and background colors
+void setTextCol(int c, int b) {
+    textCol = c;
+    textBgr = b;
+}
+
+// Set text cursor position
+void tftCursor(uint16_t tftx, uint16_t tfty) {
+    tftIdx = tftx;
+    tftIdy = tfty;
+}
+
+// Draw single character
+void tftChar(uint16_t x, uint16_t y, char c) {
+    if (c < 32 || c > 127) return;     // Only printable characters
+    
+    const uint8_t *charData = &Chartable[(c - 32) * 5];  // Get font data
+    
+    for (uint8_t col = 0; col < 5; col++) {
+        uint8_t pixels = charData[col];
+        for (uint8_t row = 0; row < 7; row++) {
+            bool pixelOn = pixels & (1 << row);
+            
+            if (pixelOn || textBgr != -1) {
+                for (uint8_t sx = 0; sx < textSize; sx++) {
+                    for (uint8_t sy = 0; sy < textSize; sy++) {
+                        uint16_t px = x + (col * textSize) + sx;
+                        uint16_t py = y + (row * textSize) + sy;
+                        uint16_t pixelColor = pixelOn ? textCol : (uint16_t)textBgr; 
+                        tftPixel(px, py, pixelColor);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ========== OVERLOADED PRINT FUNCTIONS ==========
+// Print single character
+void tftPrint(char c) {
+    tftChar(tftIdx, tftIdy, c);
+    tftIdx += 6 * textSize;
+    
+    // Handle text wrapping based on rotation
+    if (rotate == 0 || rotate == 2) {
+        if (tftIdx >= DISPLAY_WIDTH - textSize * 6) { 
+            tftIdx = 0; 
+            tftIdy += 8 * textSize; 
+        }
+    } else {
+        if (tftIdx >= DISPLAY_HEIGHT - textSize * 6) { 
+            tftIdx = 0; 
+            tftIdy += 8 * textSize; 
+        }
+    }
+}
+
+// Print null-terminated string
+void tftPrint(char *p) {
+    while (*p) {
+        tftChar(tftIdx, tftIdy, *p++);
+        tftIdx += 6 * textSize;
+        
+        // Handle text wrapping based on rotation
+        if (rotate == 0 || rotate == 2) {
+            if (tftIdx >= DISPLAY_WIDTH - textSize * 6) { 
+                tftIdx = 0; 
+                tftIdy += 8 * textSize; 
+            }
+        } else {
+            if (tftIdx >= DISPLAY_HEIGHT - textSize * 6) { 
+                tftIdx = 0; 
+                tftIdy += 8 * textSize; 
+            }
+        }
+    }
+}
+
+// Print signed integer
+void tftPrint(int n) {
+    char buffer[12];                   // Enough for -2147483648
+    char *p = buffer + 11;
+    *p = '\0';
+    
+    if (n == 0) {
+        *--p = '0';
+    } else {
+        bool negative = n < 0;
+        if (negative) n = -n;
+        
+        while (n > 0) {
+            *--p = '0' + (n % 10);
+            n /= 10;
+        }
+        if (negative) *--p = '-';
+    }
+    
+    // Print the converted string
+    tftPrint(p);
+}
+
+// Print unsigned integer
+void tftPrint(unsigned int n) {
+    char buffer[11];                   // Enough for 4294967295
+    char *p = buffer + 10;
+    *p = '\0';
+    
+    if (n == 0) {
+        *--p = '0';
+    } else {
+        while (n > 0) {
+            *--p = '0' + (n % 10);
+            n /= 10;
+        }
+    }
+    
+    // Print the converted string
+    tftPrint(p);
+}
+
+// Print signed 8-bit integer
+void tftPrint(int8_t n) {
+    tftPrint((int)n);                  // Reuse int version
+}
+
+// Print unsigned 8-bit integer
+void tftPrint(uint8_t n) {
+    tftPrint((unsigned int)n);         // Reuse unsigned int version
+}
+
+// ========== GRAPHICS FUNCTIONS ==========
+// Swap two values macro
+#define swap(a, b) { int16_t t = a; a = b; b = t; }
+
+// Draw line using Bresenham's algorithm
+void drawLine(int x0, int y0, int x1, int y1, uint16_t color) {
+    int dx, dy, err, ystep;
+    int steep = abs(y1 - y0) > abs(x1 - x0);
+    
+    if (steep) { swap(x0, y0); swap(x1, y1); }
+    if (x0 > x1) { swap(x0, x1); swap(y0, y1); }
+    
+    dx = x1 - x0;
+    dy = abs(y1 - y0);
+    err = dx / 2;
+    
+    if (y0 < y1) { ystep = 1; } 
+    else { ystep = -1; }
+    
+    for (; x0 <= x1; x0++) {
+        if (steep) {
+            tftPixel(y0, x0, color);
+        } else {
+            tftPixel(x0, y0, color);
+        }
+        err -= dy;
+        if (err < 0) { y0 += ystep; err += dx; }
+    }
+}
+
+// Draw horizontal line
+void hLine(int x, int y, int w, uint16_t color) {
+    drawLine(x, y, x + w - 1, y, color);
+}
+
+// Draw vertical line
+void vLine(int x, int y, int h, uint16_t color) {
+    drawLine(x, y, x, y + h - 1, color);
+}
+
+// Draw rectangle outline
+void drawRect(int x, int y, int w, int h, uint16_t color) {
+    hLine(x, y, w, color);
+    hLine(x, y + h - 1, w, color);
+    vLine(x, y, h, color);
+    vLine(x + w - 1, y, h, color);
+}
+
+// Draw filled rectangle
+void fillRect(int x, int y, int w, int h, uint16_t color) {
+    for (int i = x; i < x + w; i++) {
+        vLine(i, y, h, color);
+    }
+}
+
+// Draw circle outline using midpoint algorithm
+void drawCircle(int x0, int y0, int r, uint16_t color) {
+    int f = 1 - r, ddF_x = 1, ddF_y = -2 * r, x = 0, y = r;
+    
+    tftPixel(x0, y0 + r, color);
+    tftPixel(x0, y0 - r, color);
+    tftPixel(x0 + r, y0, color);
+    tftPixel(x0 - r, y0, color);
+    
+    while (x < y) {
+        if (f >= 0) {
+            y--;
+            ddF_y += 2;
+            f += ddF_y;
+        }
+        x++;
+        ddF_x += 2;
+        f += ddF_x;
+        
+        tftPixel(x0 + x, y0 + y, color);
+        tftPixel(x0 - x, y0 + y, color);
+        tftPixel(x0 + x, y0 - y, color);
+        tftPixel(x0 - x, y0 - y, color);
+        tftPixel(x0 + y, y0 + x, color);
+        tftPixel(x0 - y, y0 + x, color);
+        tftPixel(x0 + y, y0 - x, color);
+        tftPixel(x0 - y, y0 - x, color);
+    }
+}
+
+// Draw filled circle
+void fillCircle(int x0, int y0, int r, uint16_t color) {
+    vLine(x0, y0 - r, 2 * r + 1, color);
+    fillCircleHelper(x0, y0, r, 3, 0, color);
+}
+
+// ========== HELPER FUNCTIONS ==========
+// Helper function for filled circles (used by fillCircle)
+void fillCircleHelper(int x0, int y0, int r, char cornername, int delta, uint16_t color) {
+    int f = 1 - r, ddF_x = 1, ddF_y = -2 * r, x = 0, y = r;
+    
+    while (x < y) {
+        if (f >= 0) {
+            y--;
+            ddF_y += 2;
+            f += ddF_y;
+        }
+        x++;
+        ddF_x += 2;
+        f += ddF_x;
+        
+        if (cornername & 0x1) {
+            vLine(x0 + x, y0 - y, 2 * y + 1 + delta, color);
+            vLine(x0 + y, y0 - x, 2 * x + 1 + delta, color);
+        }
+        if (cornername & 0x2) {
+            vLine(x0 - x, y0 - y, 2 * y + 1 + delta, color);
+            vLine(x0 - y, y0 - x, 2 * x + 1 + delta, color);
+        }
+    }
+}
+
+// ========== INITIALIZE DISPLAY ==========
+void InitTFT(void) {
+    // Initialize pins
+    GPIOD->OUTDR |= (1<<2);            // CS HIGH (deselect display)
+    GPIOD->OUTDR |= (1<<4);            // RST HIGH (reset inactive)
+    
+    // Hardware reset
+    GPIOD->OUTDR &= ~(1<<4);           // RST LOW (activate reset)
+    delay(20);
+    GPIOD->OUTDR |= (1<<4);            // RST HIGH (release reset)
+    delay(150);
+    
+    // ST7789 Initialization Sequence
+    writeCommand(0x01);                // Software reset
+    delay(150);
+    
+    writeCommand(0x11);                // Sleep out
+    delay(255);
+    
+    writeCommand(0x36);                // Memory Data Access Control
+    writeData(0xC0);                   // MX=1, MY=1, RGB mode
+    
+    writeCommand(0x3A);                // Interface Pixel Format
+    writeData(0x55);                   // 16-bit color (RGB565)
+    delay(10);
+    
+    // Set display area (76x284)
+    writeCommand(0x2A);                // Column Address Set
+    writeData(0x00);
+    writeData(0x00);                   // Start column = 0
+    writeData(0x00);
+    writeData(0xEF);                   // End column = 239
+    
+    writeCommand(0x2B);                // Row Address Set
+    writeData(0x00);
+    writeData(0x00);                   // Start row = 0
+    writeData(0x01);
+    writeData(0x3F);                   // End row = 319
+    
+    writeCommand(0x20);                // Display Inversion off
+    delay(10);
+    
+    writeCommand(0x29);                // Display On
+    delay(100);
+}
